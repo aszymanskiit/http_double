@@ -1,0 +1,2 @@
+# Add partial matches of dialyzer output lines here to suppress specific warnings.
+# Use: mix dialyzer --format dialyzer to get the exact format.

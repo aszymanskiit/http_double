@@ -1,0 +1,17 @@
+name: Release tag
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show tag
+        run: echo "Releasing $GITHUB_REF"
+

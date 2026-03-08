@@ -1,0 +1,34 @@
+# Compiled artifacts
+/_build
+
+# Coverage
+/cover
+
+# Dependencies
+/deps
+
+# Generated docs
+/doc
+
+# VM crash dumps
+erl_crash.dump
+
+# Archives
+*.ez
+
+# Dialyzer PLT
+priv/plts/*.plt
+priv/plts/*.plt.hash
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea
+*.swp
+*.swo
+*~
+
+# Mix / Hex
+.formatter-*.tar
