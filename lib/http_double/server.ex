@@ -423,7 +423,18 @@ defmodule HttpDouble.Server do
     if norm_method(method) == "PUT" do
       case Jason.decode(body) do
         {:ok, %{"httpRequest" => req_spec, "times" => times} = _full} ->
-          want_path = norm_path(req_spec["path"] || "/")
+          {want_path, path_regex?} =
+            case req_spec do
+              %{"pathRegex" => pat} when is_binary(pat) ->
+                {pat, true}
+
+              %{"path" => pat} when is_binary(pat) ->
+                {pat, path_has_wildcards?(pat)}
+
+              _ ->
+                {"/", false}
+            end
+
           method = (req_spec["method"] || "GET") |> String.upcase()
           # Support MockServer-style times: count/exact or atLeast+atMost (equal => exact).
           want_count = times["atMost"] || times["atLeast"] || times["count"] || 1
@@ -432,10 +443,29 @@ defmodule HttpDouble.Server do
             (times["atLeast"] != nil and times["atMost"] != nil and
                times["atLeast"] == times["atMost"]) or times["exact"] == true
 
-          count =
+          {count, _re} =
             state.calls
-            |> Enum.count(fn %{request: req} ->
-              norm_path(req.path) == want_path and norm_method(req.method) == method
+            |> Enum.reduce({0, nil}, fn %{request: req}, {acc, re} ->
+              path_ok =
+                cond do
+                  path_regex? and is_binary(want_path) ->
+                    compiled =
+                      case re do
+                        %Regex{} = already -> already
+                        _ -> Regex.compile!(want_path)
+                      end
+
+                    Regex.match?(compiled, norm_path(req.path))
+
+                  true ->
+                    norm_path(req.path) == norm_path(want_path)
+                end
+
+              if path_ok and norm_method(req.method) == method do
+                {acc + 1, if(path_regex?, do: (re || Regex.compile!(want_path)), else: re)}
+              else
+                {acc, re}
+              end
             end)
 
           status = verify_match(count, want_count, exact)
@@ -463,14 +493,6 @@ defmodule HttpDouble.Server do
           status = resp_spec["statusCode"] || 200
           body_obj = resp_spec["body"] || %{}
 
-          response_body =
-            if status >= 500 and status < 600 and body_obj == %{} do
-              # Avoid returning "{}" for 5xx so logs are clearer (e.g. Auth.JWT.PublicKey).
-              "Service Unavailable"
-            else
-              mockserver_body_bytes(body_obj)
-            end
-
           times = full["times"] || %{}
 
           max_calls =
@@ -480,10 +502,55 @@ defmodule HttpDouble.Server do
               true -> :infinity
             end
 
+          response_body =
+            if status >= 500 and status < 600 and body_obj == %{} do
+              # Avoid returning "{}" for 5xx so logs are clearer (e.g. Auth.JWT.PublicKey).
+              "Service Unavailable"
+            else
+              mockserver_body_bytes(body_obj)
+            end
+
+          delay_ms =
+            case resp_spec["delay"] do
+              %{"timeUnit" => unit, "value" => value} ->
+                ms =
+                  case {unit, value} do
+                    {"SECONDS", v} when is_number(v) -> trunc(v * 1000)
+                    {"MILLISECONDS", v} when is_number(v) -> trunc(v)
+                    _ -> 0
+                  end
+
+                if ms > 0, do: ms, else: nil
+
+              _ ->
+                nil
+            end
+
+          matcher =
+            if path_has_wildcards?(path) do
+              %{
+                method: method,
+                path_regex: Regex.compile!(path)
+              }
+            else
+              %{
+                method: method,
+                path: path
+              }
+            end
+
+          base_response = %{status: status, body: response_body}
+
+          respond_spec =
+            case delay_ms do
+              nil -> base_response
+              ms -> {:delay, ms, base_response}
+            end
+
           rule =
             MockRule.build(:stub,
-              matcher: %{method: method, path: path},
-              respond: %{status: status, body: response_body},
+              matcher: matcher,
+              respond: respond_spec,
               max_calls: max_calls
             )
 
@@ -519,6 +586,12 @@ defmodule HttpDouble.Server do
 
   defp norm_method(m) when is_atom(m), do: m |> Atom.to_string() |> String.upcase()
   defp norm_method(m) when is_binary(m), do: String.upcase(m)
+
+  defp path_has_wildcards?(path) when is_binary(path) do
+    String.contains?(path, ".*")
+  end
+
+  defp path_has_wildcards?(_), do: false
 
   defp maybe_add_resolver(plug_opts, opts) do
     case Keyword.get(opts, :plug_server_resolver) do

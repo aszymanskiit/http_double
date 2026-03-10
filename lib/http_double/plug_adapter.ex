@@ -53,6 +53,10 @@ defmodule HttpDouble.PlugAdapter do
   @spec response_spec_to_conn(Plug.Conn.t(), HttpDouble.response_spec()) :: Plug.Conn.t()
   def response_spec_to_conn(conn, spec) do
     case spec do
+      {inner, _route_id} ->
+        # Route responses may be wrapped as {spec, route_id}; unwrap for Plug.
+        response_spec_to_conn(conn, inner)
+
       {:delay, ms, inner} ->
         Process.sleep(ms)
         response_spec_to_conn(conn, inner)
