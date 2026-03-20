@@ -397,7 +397,8 @@ defmodule HttpDouble.Server do
   ## MockServer-compat (PUT /expectation, PUT /mockserver/clear, PUT /reset, PUT /verify)
   ## Method is normalised so both atom :put (from Plug) and string "PUT" match.
 
-  defp mockserver_control(%Request{method: method, path: "/mockserver/clear"}, state) do
+  defp mockserver_control(%Request{method: method, path: path}, state)
+       when path in ["/mockserver/clear", "/mockserver/clear/", "/clear", "/clear/"] do
     if norm_method(method) == "PUT" do
       # Clear rules and call history so verify (e.g. want=0) sees 0 calls after clear.
       new_state = %{state | rules: [], calls: []}
@@ -407,7 +408,8 @@ defmodule HttpDouble.Server do
     end
   end
 
-  defp mockserver_control(%Request{method: method, path: "/reset"}, state) do
+  defp mockserver_control(%Request{method: method, path: path}, state)
+       when path in ["/reset", "/reset/", "/mockserver/reset", "/mockserver/reset/"] do
     if norm_method(method) == "PUT" do
       new_state = %{state | rules: [], calls: []}
       Logger.info("[HttpDouble.Server] mockserver reset (rules and calls cleared)")
@@ -419,7 +421,7 @@ defmodule HttpDouble.Server do
 
   # AuthUtils (JWKS) uses PUT /verify; TransFrameProductsClientUtils uses PUT /mockserver/verify. Same semantics.
   defp mockserver_control(%Request{method: method, path: path, body: body}, state)
-       when path in ["/verify", "/mockserver/verify"] do
+       when path in ["/verify", "/verify/", "/mockserver/verify", "/mockserver/verify/"] do
     if norm_method(method) == "PUT" do
       case Jason.decode(body) do
         {:ok, %{"httpRequest" => req_spec, "times" => times} = _full} ->
@@ -484,95 +486,195 @@ defmodule HttpDouble.Server do
     end
   end
 
-  defp mockserver_control(%Request{method: method, path: "/expectation", body: body}, state) do
+  defp mockserver_control(%Request{method: method, path: path, body: body}, state)
+       when path in [
+              "/expectation",
+              "/expectation/",
+              "/mockserver/expectation",
+              "/mockserver/expectation/"
+            ] do
+    handle_expectation_control(method, body, state)
+  end
+
+  # Fallback for minor path variants (query string, accidental extra slash etc.)
+  # so /expectation never silently drops to route dispatch.
+  defp mockserver_control(%Request{method: method, path: raw_path, body: body}, state) do
+    path = raw_path |> to_string() |> normalize_control_path()
+
+    cond do
+      path in ["/expectation", "/mockserver/expectation"] ->
+        handle_expectation_control(method, body, state)
+
+      true ->
+        nil
+    end
+  end
+
+  defp handle_expectation_control(method, body, state) do
     if norm_method(method) == "PUT" do
       case Jason.decode(body) do
-        {:ok, %{"httpRequest" => req_spec, "httpResponse" => resp_spec} = full} ->
-          method = (req_spec["method"] || "GET") |> String.upcase()
-          path = req_spec["path"] || "/"
-          status = resp_spec["statusCode"] || 200
-          body_obj = resp_spec["body"] || %{}
+        {:ok, raw_full} ->
+          # Support both string and atom keys in decoded payloads.
+          full = stringify_keys(raw_full)
+          req_spec = full["httpRequest"]
 
-          times = full["times"] || %{}
+          if is_map(req_spec) do
+            method = (req_spec["method"] || "GET") |> String.upcase()
+            path = req_spec["path"] || "/"
 
-          max_calls =
-            cond do
-              times["unlimited"] == true -> :infinity
-              r = times["remainingTimes"] -> coerce_remaining_times(r)
-              true -> :infinity
-            end
+            resp_spec = full["httpResponse"]
+            error_spec = full["httpError"]
 
-          response_body =
-            if status >= 500 and status < 600 and body_obj == %{} do
-              # Avoid returning "{}" for 5xx so logs are clearer (e.g. Auth.JWT.PublicKey).
-              "Service Unavailable"
-            else
-              mockserver_body_bytes(body_obj)
-            end
+            drop_connection? =
+              case error_spec do
+                %{"dropConnection" => v} when v in [true, "true", 1] -> true
+                %{"drop_connection" => v} when v in [true, "true", 1] -> true
+                %{"dropConnection" => %{} = _} -> true
+                %{"drop_connection" => %{} = _} -> true
+                _ -> false
+              end
 
-          delay_ms =
-            case resp_spec["delay"] do
-              %{"timeUnit" => unit, "value" => value} ->
-                ms =
-                  case {unit, value} do
-                    {"SECONDS", v} when is_number(v) -> trunc(v * 1000)
-                    {"MILLISECONDS", v} when is_number(v) -> trunc(v)
-                    _ -> 0
+            times = full["times"] || %{}
+
+            max_calls =
+              cond do
+                times["unlimited"] == true -> :infinity
+                r = times["remainingTimes"] -> coerce_remaining_times(r)
+                true -> :infinity
+              end
+
+            delay_ms_from_resp =
+              case resp_spec do
+                %{} ->
+                  case resp_spec["delay"] do
+                    %{"timeUnit" => unit, "value" => value} ->
+                      ms =
+                        case {unit, value} do
+                          {"SECONDS", v} when is_number(v) -> trunc(v * 1000)
+                          {"MILLISECONDS", v} when is_number(v) -> trunc(v)
+                          _ -> 0
+                        end
+
+                      if ms > 0, do: ms, else: nil
+
+                    _ ->
+                      nil
                   end
 
-                if ms > 0, do: ms, else: nil
+                _ ->
+                  nil
+              end
 
-              _ ->
-                nil
-            end
+            matcher =
+              if path_has_wildcards?(path) do
+                %{
+                  method: method,
+                  path_regex: Regex.compile!(path)
+                }
+              else
+                %{
+                  method: method,
+                  path: path
+                }
+              end
 
-          matcher =
-            if path_has_wildcards?(path) do
-              %{
-                method: method,
-                path_regex: Regex.compile!(path)
-              }
+            respond_spec =
+              cond do
+                # MockServer's dropConnection should terminate the connection (transport error),
+                # not return a valid HTTP response.
+                drop_connection? or is_map(error_spec) ->
+                  case delay_ms_from_resp do
+                    nil -> :close
+                    ms -> {:delay, ms, :close}
+                  end
+
+                is_map(resp_spec) ->
+                  status = resp_spec["statusCode"] || 200
+                  body_obj = resp_spec["body"] || %{}
+
+                  response_body =
+                    if status >= 500 and status < 600 and body_obj == %{} do
+                      "Service Unavailable"
+                    else
+                      mockserver_body_bytes(body_obj)
+                    end
+
+                  base_response = %{status: status, body: response_body}
+
+                  case delay_ms_from_resp do
+                    nil -> base_response
+                    ms -> {:delay, ms, base_response}
+                  end
+
+                true ->
+                  nil
+              end
+
+            if respond_spec do
+              rule =
+                MockRule.build(:stub,
+                  matcher: matcher,
+                  respond: respond_spec,
+                  max_calls: max_calls
+                )
+
+              new_state = %{state | rules: state.rules ++ [rule]}
+
+              status_for_log =
+                if drop_connection? do
+                  ":close(dropConnection)"
+                else
+                  (resp_spec && (resp_spec["statusCode"] || 200)) || 200
+                end
+
+              Logger.info(
+                "[HttpDouble.Server] mockserver expectation added #{method} #{path} -> #{status_for_log}"
+              )
+
+              {%{status: 201}, new_state, nil, nil}
             else
-              %{
-                method: method,
-                path: path
-              }
+              {%{status: 400, body: "Invalid expectation"}, state, nil, nil}
             end
+          else
+            {%{status: 400, body: "Invalid expectation"}, state, nil, nil}
+          end
 
-          base_response = %{status: status, body: response_body}
+        {:error, reason} ->
+          Logger.warning("[HttpDouble.Server] /expectation JSON decode failed: #{inspect(reason)}")
 
-          respond_spec =
-            case delay_ms do
-              nil -> base_response
-              ms -> {:delay, ms, base_response}
-            end
+          {%{status: 400, body: "Invalid expectation"}, state, nil, nil}
 
-          rule =
-            MockRule.build(:stub,
-              matcher: matcher,
-              respond: respond_spec,
-              max_calls: max_calls
-            )
-
-          # Append so expectations are consumed in the order they were added (FIFO).
-          new_state = %{state | rules: state.rules ++ [rule]}
-
-          Logger.info(
-            "[HttpDouble.Server] mockserver expectation added #{method} #{path} -> #{status}"
-          )
-
-          # 201 for compatibility with tests that expect MockServer-style "expectation created".
-          {%{status: 201}, new_state, nil, nil}
-
-        _ ->
-          nil
+        _other ->
+          {%{status: 400, body: "Invalid expectation"}, state, nil, nil}
       end
     else
-      nil
+      {%{status: 405, body: "Method Not Allowed"}, state, nil, nil}
     end
   end
 
   defp mockserver_control(_, _), do: nil
+
+  defp normalize_control_path(path) when is_binary(path) do
+    path
+    |> String.split("?", parts: 2)
+    |> List.first()
+    |> then(&(&1 || "/"))
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r{/+}, "/")
+    |> String.trim_trailing("/")
+    |> then(&if &1 == "", do: "/", else: &1)
+  end
+
+  defp stringify_keys(%{} = map) do
+    Enum.into(map, %{}, fn {k, v} -> {to_string(k), stringify_keys(v)} end)
+  end
+
+  defp stringify_keys(list) when is_list(list) do
+    Enum.map(list, &stringify_keys/1)
+  end
+
+  defp stringify_keys(other), do: other
 
   defp verify_match(count, want, true) when count == want, do: 202
   defp verify_match(_, _, true), do: 417
@@ -585,7 +687,7 @@ defmodule HttpDouble.Server do
     do: p |> String.trim_trailing("/") |> then(&if &1 == "", do: "/", else: &1)
 
   defp norm_method(m) when is_atom(m), do: m |> Atom.to_string() |> String.upcase()
-  defp norm_method(m) when is_binary(m), do: String.upcase(m)
+  defp norm_method(m) when is_binary(m), do: m |> String.trim() |> String.upcase()
 
   defp path_has_wildcards?(path) when is_binary(path) do
     String.contains?(path, ".*")

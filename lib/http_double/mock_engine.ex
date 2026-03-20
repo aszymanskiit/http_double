@@ -180,6 +180,7 @@ defmodule HttpDouble.MockEngine do
               case v do
                 :any -> true
                 %Regex{} = re -> Regex.match?(re, val)
+                expected when is_list(expected) -> val in Enum.map(expected, &to_string/1)
                 other -> val == other
               end
 

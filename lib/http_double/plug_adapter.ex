@@ -48,7 +48,9 @@ defmodule HttpDouble.PlugAdapter do
   Sends the response_spec back through the Plug.Conn.
 
   Supports: map/struct (status, body, json, headers), and {:delay, ms, inner}.
-  Other specs (e.g. :timeout, :close, {:fun, _}) are simplified to a 200 empty response.
+  :timeout returns 504 after delay. :close terminates request process to emulate
+  abrupt connection drop (no valid HTTP response). Other unsupported specs are
+  simplified to a 200 empty response.
   """
   @spec response_spec_to_conn(Plug.Conn.t(), HttpDouble.response_spec()) :: Plug.Conn.t()
   def response_spec_to_conn(conn, spec) do
@@ -67,9 +69,8 @@ defmodule HttpDouble.PlugAdapter do
         Plug.Conn.send_resp(conn, 504, "Gateway Timeout")
 
       :close ->
-        conn
-        |> Plug.Conn.put_resp_header("connection", "close")
-        |> Plug.Conn.send_resp(200, "")
+        # Simulate connection drop before any HTTP response is sent.
+        Process.exit(self(), :kill)
 
       %{status: status} = map when is_map(map) ->
         apply_simple_response(conn, map, status)
