@@ -1,9 +1,17 @@
 # HttpDouble
 
-**HttpDouble** is a controllable, HTTP/1.1 dummy server for **integration testing** in Elixir. It speaks real HTTP over TCP on a configurable (or random) port and gives you a programmatic API to stub responses, record requests, and inject faults (timeouts, connection drops, partial responses). It is designed for testing systems that call external HTTP endpoints—e.g. webhooks, REST APIs callbacks—without hitting the real network.
+[![CI](https://github.com/aszymanskiit/http_double/actions/workflows/ci.yml/badge.svg)](https://github.com/aszymanskiit/http_double/actions/workflows/ci.yml)
+[![Hex.pm](https://img.shields.io/hexpm/v/http_double.svg)](https://hex.pm/packages/http_double)
+[![Documentation](https://img.shields.io/badge/hexdocs-HttpDouble-blue)](https://hexdocs.pm/http_double)
 
-- **Repository:** [https://github.com/aszymanskiit/http_double](https://github.com/aszymanskiit/http_double)
+**HttpDouble** is a controllable, HTTP/1.1 dummy server for **integration testing** in Elixir. It speaks real HTTP over TCP on a configurable (or random) port and gives you a programmatic API to stub responses, record requests, and inject faults (timeouts, connection drops, partial responses). The library’s **HTTP control API** (expectations, verification, reset, and related paths) is **compatible with [MockServer](https://www.mock-server.com/)** for the supported subset—see [MockServer compatibility](#mockserver-compatibility). It is designed for testing systems that call external HTTP endpoints—e.g. webhooks, REST APIs callbacks—without hitting the real network.
+
+- **Package:** [hex.pm/packages/http_double](https://hex.pm/packages/http_double)
+- **API docs (HexDocs):** [hexdocs.pm/http_double](https://hexdocs.pm/http_double)
+- **Repository:** [github.com/aszymanskiit/http_double](https://github.com/aszymanskiit/http_double)
 - **License:** MIT (see [LICENSE](LICENSE))
+- **Changelog:** [CHANGELOG.md](CHANGELOG.md)
+- **MockServer:** implementation includes a [MockServer-compatible](#mockserver-compatibility) control API ([mock-server.com](https://www.mock-server.com/))
 
 ---
 
@@ -30,6 +38,18 @@ It is **not** a production web server. It is a **test tool** with predictable be
 - **ExUnit integration** – `use HttpDouble.Case` gives you a fresh server per test and `http_server` / `http_endpoint` in context.
 - **Multiple modes** – mock-first (stubs override routes), routes-only, or mock-only.
 - **Fast and isolated** – one OTP process per server; safe for async tests.
+- **MockServer-compatible control API** – HTTP endpoints such as `PUT /mockserver/expectation`, `PUT /mockserver/verify`, and related paths follow **[MockServer](https://www.mock-server.com/)** semantics where practical (see [MockServer compatibility](#mockserver-compatibility)).
+
+---
+
+## MockServer compatibility
+
+HttpDouble exposes an HTTP **control plane** on the same port as the mock traffic (e.g. `PUT` on `/mockserver/expectation`, `/mockserver/verify`, `/mockserver/clear`, `/mockserver/reset`, and path aliases used by real-world clients). That surface is implemented to be **compatible with [MockServer](https://www.mock-server.com/)** so integrations, scripts, or services that already speak MockServer’s REST API can often target HttpDouble in Elixir tests **without** a separate JVM process.
+
+This is an intentional **subset** of MockServer’s full API—not every endpoint, header, or JSON field behaves exactly like the reference implementation. For the authoritative specification and behaviour, see the upstream project.
+
+- **MockServer (documentation & product):** [mock-server.com](https://www.mock-server.com/)
+- **MockServer (source):** [github.com/mock-server/mockserver](https://github.com/mock-server/mockserver)
 
 ---
 
@@ -38,7 +58,7 @@ It is **not** a production web server. It is a **test tool** with predictable be
 Add HttpDouble as a dependency **only in test** (it is not for production).
 
 ```elixir
-{:http_double, "~> 0.1.0", only: :test}
+{:http_double, "~> 1.0", only: :test}
 ```
 
 ---
@@ -241,7 +261,7 @@ end
 | `host/1`, `port/1`, `endpoint/1`, `url/2` | Server address and URLs |
 | `stop/1` | Stop the server |
 
-Matchers can be a map (`%{method: ..., path: ...}`), or `:any`, `{:method, m}`, `{:path, p}`, `{:prefix, p}`, `{:path_regex, re}`, `{:route, method, path}`, `{:fn, fun}`. Response specs can be maps (with `:status`, `:body`, `:json`, `:headers`), `{:delay, ms, spec}`, `:timeout`, `:close`, `{:close, spec}`, `{:raw, iodata}`, `{:partial, [iodata]}`, `{:fun, fun}`, or a list of specs for sequential responses. Run `mix docs` and open `doc/index.html` for full API and types.
+Matchers can be a map (`%{method: ..., path: ...}`), or `:any`, `{:method, m}`, `{:path, p}`, `{:prefix, p}`, `{:path_regex, re}`, `{:route, method, path}`, `{:fn, fun}`. Response specs can be maps (with `:status`, `:body`, `:json`, `:headers`), `{:delay, ms, spec}`, `:timeout`, `:close`, `{:close, spec}`, `{:raw, iodata}`, `{:partial, [iodata]}`, `{:fun, fun}`, or a list of specs for sequential responses. For full API and types, see [HexDocs](https://hexdocs.pm/http_double) or run `mix docs` locally and open `doc/index.html`.
 
 ---
 
@@ -275,11 +295,10 @@ HttpDouble is a **test double**, not a full HTTP stack:
 - No automatic compression or advanced features.
 
 For heavy real-world behaviour use a real server in system tests; use HttpDouble for **deterministic integration tests** and fault injection.
----
 
 ## Repository and license
 
-- **Source:** [https://github.com/aszymanskiit/http_double](https://github.com/aszymanskiit/http_double)
-- **License:** MIT – see [LICENSE](LICENSE) in the repository.
+- **Source:** [github.com/aszymanskiit/http_double](https://github.com/aszymanskiit/http_double)
+- **License:** MIT – see [LICENSE](LICENSE).
 
 You can use, copy, modify, merge, publish, distribute, sublicense, and sell copies of the software under the terms of the MIT License.

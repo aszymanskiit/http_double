@@ -449,22 +449,20 @@ defmodule HttpDouble.Server do
             state.calls
             |> Enum.reduce({0, nil}, fn %{request: req}, {acc, re} ->
               path_ok =
-                cond do
-                  path_regex? and is_binary(want_path) ->
-                    compiled =
-                      case re do
-                        %Regex{} = already -> already
-                        _ -> Regex.compile!(want_path)
-                      end
+                if path_regex? and is_binary(want_path) do
+                  compiled =
+                    case re do
+                      %Regex{} = already -> already
+                      _ -> Regex.compile!(want_path)
+                    end
 
-                    Regex.match?(compiled, norm_path(req.path))
-
-                  true ->
-                    norm_path(req.path) == norm_path(want_path)
+                  Regex.match?(compiled, norm_path(req.path))
+                else
+                  norm_path(req.path) == norm_path(want_path)
                 end
 
               if path_ok and norm_method(req.method) == method do
-                {acc + 1, if(path_regex?, do: (re || Regex.compile!(want_path)), else: re)}
+                {acc + 1, if(path_regex?, do: re || Regex.compile!(want_path), else: re)}
               else
                 {acc, re}
               end
@@ -501,14 +499,14 @@ defmodule HttpDouble.Server do
   defp mockserver_control(%Request{method: method, path: raw_path, body: body}, state) do
     path = raw_path |> to_string() |> normalize_control_path()
 
-    cond do
-      path in ["/expectation", "/mockserver/expectation"] ->
-        handle_expectation_control(method, body, state)
-
-      true ->
-        nil
+    if path in ["/expectation", "/mockserver/expectation"] do
+      handle_expectation_control(method, body, state)
+    else
+      nil
     end
   end
+
+  defp mockserver_control(_, _), do: nil
 
   defp handle_expectation_control(method, body, state) do
     if norm_method(method) == "PUT" do
@@ -640,19 +638,16 @@ defmodule HttpDouble.Server do
           end
 
         {:error, reason} ->
-          Logger.warning("[HttpDouble.Server] /expectation JSON decode failed: #{inspect(reason)}")
+          Logger.warning(
+            "[HttpDouble.Server] /expectation JSON decode failed: #{inspect(reason)}"
+          )
 
-          {%{status: 400, body: "Invalid expectation"}, state, nil, nil}
-
-        _other ->
           {%{status: 400, body: "Invalid expectation"}, state, nil, nil}
       end
     else
       {%{status: 405, body: "Method Not Allowed"}, state, nil, nil}
     end
   end
-
-  defp mockserver_control(_, _), do: nil
 
   defp normalize_control_path(path) when is_binary(path) do
     path

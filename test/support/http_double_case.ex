@@ -2,7 +2,9 @@ defmodule HttpDouble.Case do
   @moduledoc """
   ExUnit case template that spins up an isolated HttpDouble server per test.
 
-  Usage:
+  Injects `http_server` and `http_endpoint` into the test context (see `HttpDouble.endpoint/1`).
+
+  ## Example
 
       defmodule MyTest do
         use HttpDouble.Case, async: true
@@ -14,6 +16,8 @@ defmodule HttpDouble.Case do
           assert endpoint.port > 0
         end
       end
+
+  See `HttpDouble` and the [project README](https://github.com/aszymanskiit/http_double/blob/main/README.md).
   """
 
   use ExUnit.CaseTemplate

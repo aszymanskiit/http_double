@@ -2,7 +2,7 @@ defmodule HttpDouble.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/aszymanskiit/http_double"
-  @version "0.1.0"
+  @version "1.0.0"
 
   def project do
     [
@@ -14,9 +14,10 @@ defmodule HttpDouble.MixProject do
       dialyzer: dialyzer(),
       elixirc_paths: elixirc_paths(Mix.env()),
       source_url: @source_url,
+      docs: docs(),
       package: package(),
       description:
-        "Controllable dummy HTTP server for integration testing (ejabberd/XMPP-friendly)",
+        "Controllable dummy HTTP server for integration testing; HTTP control API compatible with MockServer (mock-server.com), plus Elixir stubs and routes (ejabberd/XMPP-friendly)",
       preferred_cli_env: [
         coveralls: :test,
         "coveralls.html": :test,
@@ -53,11 +54,23 @@ defmodule HttpDouble.MixProject do
     ]
   end
 
+  defp docs do
+    [
+      main: "readme",
+      source_url: @source_url,
+      extras: ["README.md", "CHANGELOG.md", "LICENSE"]
+    ]
+  end
+
   defp package do
     [
+      files: ~w(lib config mix.exs README.md LICENSE CHANGELOG.md),
       maintainers: ["aszymanskiit"],
       licenses: ["MIT"],
-      links: %{"GitHub" => @source_url}
+      links: %{
+        "GitHub" => @source_url,
+        "Hex" => "https://hex.pm/packages/http_double"
+      }
     ]
   end
 end

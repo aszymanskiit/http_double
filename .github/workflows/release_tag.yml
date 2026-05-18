@@ -6,12 +6,35 @@ on:
       - "v*"
 
 jobs:
-  notify:
+  release:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show tag
-        run: echo "Releasing $GITHUB_REF"
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.15.7"
+          otp-version: "26.2"
 
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile project
+        run: mix compile
+
+      - name: Version from mix.exs
+        id: mix
+        run: |
+          # Compile first; --no-compile keeps mix stdout to a single version line for GITHUB_OUTPUT.
+          VERSION=$(mix run --no-start --no-compile -e 'IO.puts(Mix.Project.config()[:version])' | tr -d '\r' | tail -n 1)
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$'; then
+            echo "Unexpected version output: ${VERSION}" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          echo "## HttpDouble v${{ steps.mix.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tag: \`$GITHUB_REF_NAME\` — version in \`mix.exs\`: \`${{ steps.mix.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"

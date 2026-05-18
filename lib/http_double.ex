@@ -15,7 +15,8 @@ defmodule HttpDouble do
     * `host/1`, `port/1`, `endpoint/1`, `url/2` – discover where the server is listening
     * `stop/1` – stop the server
 
-  See the project README for more detailed examples.
+  **Documentation:** [README on GitHub](https://github.com/aszymanskiit/http_double/blob/main/README.md)
+  and [HexDocs](https://hexdocs.pm/http_double).
   """
 
   @typedoc "A server reference; can be a PID or a registered name."

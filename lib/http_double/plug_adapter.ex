@@ -47,16 +47,20 @@ defmodule HttpDouble.PlugAdapter do
   @doc """
   Sends the response_spec back through the Plug.Conn.
 
-  Supports: map/struct (status, body, json, headers), and {:delay, ms, inner}.
-  :timeout returns 504 after delay. :close terminates request process to emulate
-  abrupt connection drop (no valid HTTP response). Other unsupported specs are
-  simplified to a 200 empty response.
+  Supports: map/struct (status, body, json, headers), `{:delay, ms, inner}`, `{:raw,
+  iodata}`, and `{:partial, [iodata]}` (chunks concatenated into one response body).
+
+  `:timeout` returns 504 after delay. `:close` terminates the request process to emulate
+  abrupt connection drop (no valid HTTP response). Route matches may pass `{spec,
+  route_id}` with a reference `route_id`; that tuple is unwrapped before handling.
+
+  Other unsupported specs fall back to a 200 empty body (with a log warning).
   """
   @spec response_spec_to_conn(Plug.Conn.t(), HttpDouble.response_spec()) :: Plug.Conn.t()
   def response_spec_to_conn(conn, spec) do
     case spec do
-      {inner, _route_id} ->
-        # Route responses may be wrapped as {spec, route_id}; unwrap for Plug.
+      # Route matches wrap as {spec, route_id} where route_id is a reference only.
+      {inner, route_id} when is_reference(route_id) ->
         response_spec_to_conn(conn, inner)
 
       {:delay, ms, inner} ->
