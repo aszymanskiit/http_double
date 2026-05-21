@@ -97,6 +97,59 @@ defmodule HttpDouble.MockApiTest do
     :gen_tcp.close(socket)
   end
 
+  test "mockserver expectation JSON body uses application/json content-type", %{
+    http_server: server
+  } do
+    %{host: host, port: port, base_url: base_url} = HttpDouble.endpoint(server)
+
+    expectation = %{
+      httpRequest: %{method: "GET", path: "/api/example"},
+      httpResponse: %{
+        statusCode: 200,
+        body: %{
+          type: "JSON",
+          json: ~s({"ok":true}),
+          contentType: "application/json"
+        }
+      }
+    }
+
+    {:ok, socket} =
+      :gen_tcp.connect(String.to_charlist(host), port, [:binary, packet: :raw, active: false])
+
+    payload =
+      Jason.encode!(expectation)
+      |> then(fn body ->
+        [
+          "PUT /expectation HTTP/1.1\r\n",
+          "host: localhost\r\n",
+          "content-type: application/json\r\n",
+          "content-length: ",
+          Integer.to_string(byte_size(body)),
+          "\r\n\r\n",
+          body
+        ]
+        |> IO.iodata_to_binary()
+      end)
+
+    :ok = :gen_tcp.send(socket, payload)
+    {:ok, _} = :gen_tcp.recv(socket, 0, 1_000)
+
+    {:ok, socket2} =
+      :gen_tcp.connect(String.to_charlist(host), port, [:binary, packet: :raw, active: false])
+
+    :ok = :gen_tcp.send(socket2, "GET /api/example HTTP/1.1\r\nhost: localhost\r\n\r\n")
+    {:ok, data} = :gen_tcp.recv(socket2, 0, 1_000)
+    :gen_tcp.close(socket2)
+    :gen_tcp.close(socket)
+
+    # Cowboy/Plug emit lowercase header names (HTTP header names are case-insensitive).
+    assert String.downcase(data) =~ "content-type: application/json"
+    assert data =~ ~s({"ok":true})
+    refute data =~ "text/plain"
+    assert is_binary(base_url)
+  end
+
   test "fault injection with raw and partial responses", %{http_server: server} do
     {:ok, _rule} =
       HttpDouble.stub(server, %{method: "GET", path: "/broken"}, {:raw, "BROKEN RESPONSE"})

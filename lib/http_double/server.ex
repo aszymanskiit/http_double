@@ -597,7 +597,11 @@ defmodule HttpDouble.Server do
                       mockserver_body_bytes(body_obj)
                     end
 
-                  base_response = %{status: status, body: response_body}
+                  base_response = %{
+                    status: status,
+                    body: response_body,
+                    headers: mockserver_response_headers(body_obj)
+                  }
 
                   case delay_ms_from_resp do
                     nil -> base_response
@@ -714,6 +718,18 @@ defmodule HttpDouble.Server do
   defp mockserver_body_bytes(%{"type" => "STRING", "string" => s}) when is_binary(s), do: s
   defp mockserver_body_bytes(%{} = map), do: Jason.encode!(map)
   defp mockserver_body_bytes(_), do: ""
+
+  defp mockserver_response_headers(%{"contentType" => ct}) when is_binary(ct) and ct != "",
+    do: [{"content-type", ct}]
+
+  defp mockserver_response_headers(%{"type" => "JSON"}),
+    do: [{"content-type", "application/json"}]
+
+  defp mockserver_response_headers(%{"type" => "STRING"}),
+    do: [{"content-type", "text/plain; charset=utf-8"}]
+
+  defp mockserver_response_headers(_),
+    do: [{"content-type", "application/json"}]
 
   ## Dispatch (shared by handle_request and legacy :request)
 

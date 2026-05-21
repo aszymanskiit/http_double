@@ -107,7 +107,10 @@ defmodule HttpDouble.PlugAdapter do
   end
 
   defp apply_simple_response(conn, map, status) do
-    {body, content_type} =
+    headers = Map.get(map, :headers, [])
+    {headers, header_content_type} = pop_content_type_header(headers)
+
+    {body, default_content_type} =
       case Map.get(map, :json) do
         nil ->
           {Map.get(map, :body, "") |> IO.iodata_to_binary(), "text/plain; charset=utf-8"}
@@ -116,12 +119,32 @@ defmodule HttpDouble.PlugAdapter do
           {Jason.encode!(data), "application/json"}
       end
 
-    headers = Map.get(map, :headers, [])
+    content_type = header_content_type || default_content_type
 
     conn
-    |> Plug.Conn.put_resp_content_type(content_type, "utf-8")
+    |> put_resp_content_type(content_type)
     |> put_resp_headers(headers)
     |> Plug.Conn.send_resp(status, body)
+  end
+
+  defp pop_content_type_header(headers) do
+    case Enum.find_index(headers, fn {name, _} ->
+           String.downcase(to_string(name)) == "content-type"
+         end) do
+      nil ->
+        {headers, nil}
+
+      idx ->
+        {ct, rest} = List.pop_at(headers, idx)
+        {_, value} = ct
+        {rest, value}
+    end
+  end
+
+  # Plug's 3-arg form is (conn, type, charset) — not (type, subtype). Pass the full MIME
+  # string with charset nil so the header is set verbatim (MockServer contentType values).
+  defp put_resp_content_type(conn, content_type) when is_binary(content_type) do
+    Plug.Conn.put_resp_content_type(conn, content_type, nil)
   end
 
   defp normalize_query_value(v) when is_list(v), do: (List.first(v) || "") |> to_string()
