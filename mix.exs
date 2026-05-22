@@ -2,7 +2,7 @@ defmodule HttpDouble.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/aszymanskiit/http_double"
-  @version "1.0.1"
+  @version "1.0.2"
 
   def project do
     [

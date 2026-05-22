@@ -38,18 +38,109 @@ It is **not** a production web server. It is a **test tool** with predictable be
 - **ExUnit integration** – `use HttpDouble.Case` gives you a fresh server per test and `http_server` / `http_endpoint` in context.
 - **Multiple modes** – mock-first (stubs override routes), routes-only, or mock-only.
 - **Fast and isolated** – one OTP process per server; safe for async tests.
-- **MockServer-compatible control API** – HTTP endpoints such as `PUT /mockserver/expectation`, `PUT /mockserver/verify`, and related paths follow **[MockServer](https://www.mock-server.com/)** semantics where practical (see [MockServer compatibility](#mockserver-compatibility)).
+- **MockServer-compatible control API** – `PUT /mockserver/expectation`, `/verify`, `/clear` (full or selective by matcher), `/reset`; JSON bodies with correct `Content-Type` for `body.type: JSON` (see [MockServer compatibility](#mockserver-compatibility)).
 
 ---
 
 ## MockServer compatibility
 
-HttpDouble exposes an HTTP **control plane** on the same port as the mock traffic (e.g. `PUT` on `/mockserver/expectation`, `/mockserver/verify`, `/mockserver/clear`, `/mockserver/reset`, and path aliases used by real-world clients). That surface is implemented to be **compatible with [MockServer](https://www.mock-server.com/)** so integrations, scripts, or services that already speak MockServer’s REST API can often target HttpDouble in Elixir tests **without** a separate JVM process.
+HttpDouble exposes an HTTP **control plane** on the **same port** as the mock traffic. Clients that already speak [MockServer](https://www.mock-server.com/)’s REST API (e.g. test helpers using `RestClient`, `:httpc`, or curl) can target HttpDouble **without** a separate JVM process.
 
-This is an intentional **subset** of MockServer’s full API—not every endpoint, header, or JSON field behaves exactly like the reference implementation. For the authoritative specification and behaviour, see the upstream project.
+This is an intentional **subset** of MockServer’s full API—not every endpoint, header, or JSON field behaves exactly like the reference implementation.
 
 - **MockServer (documentation & product):** [mock-server.com](https://www.mock-server.com/)
 - **MockServer (source):** [github.com/mock-server/mockserver](https://github.com/mock-server/mockserver)
+
+### Supported control endpoints
+
+| Method | Path(s) | Purpose |
+|--------|---------|---------|
+| `PUT` | `/expectation`, `/mockserver/expectation` | Register a dynamic expectation (stub rule) |
+| `PUT` | `/verify`, `/mockserver/verify` | Assert how many times a request was received |
+| `PUT` | `/clear`, `/mockserver/clear` | Remove expectation rules (all or selective) |
+| `PUT` | `/reset`, `/mockserver/reset` | Clear **all** expectation rules and call history |
+
+Path aliases (`/clear` vs `/mockserver/clear`, etc.) exist because different codebases in the wild use different prefixes.
+
+**Important:** MockServer `clear` / `reset` affect only **dynamic expectation rules** and **call history**. **Static routes** configured at startup (`:routes`, `set_routes/2`, …) are unchanged. To wipe routes as well, use `HttpDouble.reset!/1` from Elixir.
+
+### Registering expectations (`PUT /expectation`)
+
+Body shape (JSON) follows MockServer: `httpRequest`, `httpResponse` or `httpError`, optional `times` (`unlimited`, `remainingTimes`).
+
+```json
+{
+  "httpRequest": {
+    "method": "GET",
+    "path": "/api/rest/v1/employees/42/permissions"
+  },
+  "httpResponse": {
+    "statusCode": 200,
+    "body": {
+      "type": "JSON",
+      "json": "{\"total_items\": 1}",
+      "contentType": "application/json"
+    }
+  },
+  "times": { "unlimited": true }
+}
+```
+
+- `body.type: "JSON"` with `json` as a **string** — response is sent with `Content-Type: application/json` (since 1.0.1).
+- `body.type: "STRING"` with `string` — plain text; optional `contentType`.
+- `httpError.dropConnection: true` — connection drop (`:close`), no HTTP response body.
+- `httpResponse.delay` — optional delay before the response (MockServer-style `timeUnit` / `value`).
+
+Expectation rules are evaluated in **`:mock_first`** mode before static routes; in **`:mock_only`** they are the only matchers besides 404.
+
+### Verifying calls (`PUT /verify`)
+
+```json
+{
+  "httpRequest": { "method": "GET", "path": "/api/example" },
+  "times": { "atLeast": 1, "atMost": 1 }
+}
+```
+
+Returns HTTP `202` when the match count satisfies `times`, otherwise `417`. Call history is read-only for verify; use `clear` to reset counts between scenarios.
+
+### Clearing expectations (`PUT /clear`)
+
+**Clear all** — empty body or `{}` removes every dynamic rule and clears call history:
+
+```bash
+curl -X PUT "http://127.0.0.1:PORT/mockserver/clear" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+**Selective clear** (since **1.0.2**) — only rules matching the request matcher are removed; other expectations and static routes stay:
+
+```json
+{
+  "httpRequest": {
+    "pathRegex": "^/api/rest/v1/context-access"
+  }
+}
+```
+
+Also supported:
+
+- Wrapper form: `{ "httpRequest": { "method": "GET", "path": "/api/foo" } }`
+- Top-level matcher (no wrapper): `{ "method": "GET", "path": "/api/foo" }` — same as some existing test utilities send to `/mockserver/clear`
+
+Matching uses rule `method` + `path` (exact or prefix under a concrete path) or `pathRegex` against the rule’s path. Rules registered with a path regex in the expectation are matched against the clear regex when applicable.
+
+Use selective clear when long-lived stubs (e.g. permissions for a fixed `setup_all` account) must survive per-test cleanup of another API surface.
+
+### Reset vs Elixir `reset!/1`
+
+| Mechanism | Dynamic rules | Call history | Static routes |
+|-----------|---------------|--------------|---------------|
+| `PUT /mockserver/clear` `{}` | cleared | cleared | kept |
+| `PUT /mockserver/clear` selective | matching only | cleared | kept |
+| `PUT /mockserver/reset` | cleared | cleared | kept |
+| `HttpDouble.reset!/1` | cleared | cleared | **cleared** |
 
 ---
 
@@ -58,7 +149,7 @@ This is an intentional **subset** of MockServer’s full API—not every endpoin
 Add HttpDouble as a dependency **only in test** (it is not for production).
 
 ```elixir
-{:http_double, "~> 1.0", only: :test}
+{:http_double, "~> 1.0.2", only: :test}
 ```
 
 ---
@@ -229,10 +320,22 @@ HttpDouble.delete_route(server, %{method: "GET", path: "/foo"})
 
 ### Resetting state between tests
 
+From Elixir (full wipe including static routes):
+
 ```elixir
 HttpDouble.reset!(server)
-# Clears routes, mock rules, and call history
+# Clears static routes, mock/expectation rules, and call history
 ```
+
+From HTTP (MockServer clients) — only dynamic rules and history; routes defined at `start_link` remain:
+
+```elixir
+# Via :httpc, Req, RestClient, etc. on the same base_url as the app under test:
+# PUT base_url <> "/mockserver/clear"  body: "{}"
+# PUT base_url <> "/mockserver/reset"
+```
+
+Prefer **selective** `PUT /mockserver/clear` with `path` / `pathRegex` when shared stubs must outlive a single test (see [Clearing expectations](#clearing-expectations-put-clear)).
 
 ### Using with ExUnit.Case context
 

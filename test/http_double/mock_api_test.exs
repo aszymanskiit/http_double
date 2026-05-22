@@ -150,6 +150,58 @@ defmodule HttpDouble.MockApiTest do
     assert is_binary(base_url)
   end
 
+  test "mockserver clear with pathRegex removes matching rules only", %{http_server: server} do
+    %{host: host, port: port} = HttpDouble.endpoint(server)
+
+    for path <- ["/api/rest/v1/context-access/offer/1", "/api/rest/v1/employees/1/permissions"] do
+      {:ok, _} =
+        HttpDouble.stub(server, %{method: "GET", path: path}, %{status: 200, body: path})
+    end
+
+    {:ok, socket} =
+      :gen_tcp.connect(String.to_charlist(host), port, [:binary, packet: :raw, active: false])
+
+    clear_body =
+      Jason.encode!(%{
+        httpRequest: %{pathRegex: "^/api/rest/v1/context-access"}
+      })
+
+    clear_payload =
+      [
+        "PUT /mockserver/clear HTTP/1.1\r\n",
+        "host: localhost\r\n",
+        "content-type: application/json\r\n",
+        "content-length: ",
+        Integer.to_string(byte_size(clear_body)),
+        "\r\n\r\n",
+        clear_body
+      ]
+      |> IO.iodata_to_binary()
+
+    :ok = :gen_tcp.send(socket, clear_payload)
+    {:ok, _} = :gen_tcp.recv(socket, 0, 1_000)
+
+    :ok =
+      :gen_tcp.send(
+        socket,
+        "GET /api/rest/v1/context-access/offer/1 HTTP/1.1\r\nhost: localhost\r\n\r\n"
+      )
+
+    {:ok, data_ca} = :gen_tcp.recv(socket, 0, 1_000)
+
+    :ok =
+      :gen_tcp.send(
+        socket,
+        "GET /api/rest/v1/employees/1/permissions HTTP/1.1\r\nhost: localhost\r\n\r\n"
+      )
+
+    {:ok, data_tfp} = :gen_tcp.recv(socket, 0, 1_000)
+    :gen_tcp.close(socket)
+
+    refute data_ca =~ "/api/rest/v1/context-access/offer/1"
+    assert data_tfp =~ "/api/rest/v1/employees/1/permissions"
+  end
+
   test "fault injection with raw and partial responses", %{http_server: server} do
     {:ok, _rule} =
       HttpDouble.stub(server, %{method: "GET", path: "/broken"}, {:raw, "BROKEN RESPONSE"})

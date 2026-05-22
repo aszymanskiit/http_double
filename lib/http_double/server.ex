@@ -397,11 +397,11 @@ defmodule HttpDouble.Server do
   ## MockServer-compat (PUT /expectation, PUT /mockserver/clear, PUT /reset, PUT /verify)
   ## Method is normalised so both atom :put (from Plug) and string "PUT" match.
 
-  defp mockserver_control(%Request{method: method, path: path}, state)
+  defp mockserver_control(%Request{method: method, path: path, body: body}, state)
        when path in ["/mockserver/clear", "/mockserver/clear/", "/clear", "/clear/"] do
     if norm_method(method) == "PUT" do
-      # Clear rules and call history so verify (e.g. want=0) sees 0 calls after clear.
-      new_state = %{state | rules: [], calls: []}
+      # Clear rules (all or selective) and call history so verify (e.g. want=0) sees 0 calls.
+      new_state = apply_mockserver_clear(body, state)
       {%{status: 200}, new_state, nil, nil}
     else
       nil
@@ -507,6 +507,100 @@ defmodule HttpDouble.Server do
   end
 
   defp mockserver_control(_, _), do: nil
+
+  defp apply_mockserver_clear(body, state) do
+    case parse_clear_request(body) do
+      :all ->
+        %{state | rules: [], calls: []}
+
+      {:selective, spec} ->
+        rules = Enum.reject(state.rules, &rule_matches_clear_spec?(&1, spec))
+        %{state | rules: rules, calls: []}
+    end
+  end
+
+  defp parse_clear_request(body) when body in [nil, ""], do: :all
+
+  defp parse_clear_request(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> parse_clear_request_map(stringify_keys(decoded))
+      _ -> :all
+    end
+  end
+
+  defp parse_clear_request_map(%{"httpRequest" => spec}) when is_map(spec), do: {:selective, spec}
+
+  defp parse_clear_request_map(%{} = map) do
+    cond do
+      map == %{} ->
+        :all
+
+      Map.has_key?(map, "path") or Map.has_key?(map, "pathRegex") or Map.has_key?(map, "method") ->
+        {:selective, map}
+
+      true ->
+        :all
+    end
+  end
+
+  defp rule_matches_clear_spec?(%MockRule{matcher: matcher}, spec) do
+    clear_method = spec["method"] |> optional_clear_method()
+    clear_path = spec["path"]
+    clear_path_regex = spec["pathRegex"]
+
+    rule_method = matcher_method(matcher)
+    rule_paths = matcher_paths(matcher)
+
+    method_ok? = clear_method == nil or rule_method == nil or rule_method == clear_method
+
+    path_ok? =
+      cond do
+        is_binary(clear_path_regex) ->
+          clear_re = Regex.compile!(clear_path_regex)
+
+          Enum.any?(rule_paths, fn p ->
+            is_binary(p) and Regex.match?(clear_re, norm_path(p))
+          end)
+
+        is_binary(clear_path) ->
+          if path_has_wildcards?(clear_path) do
+            clear_re = Regex.compile!(clear_path)
+
+            Enum.any?(rule_paths, fn p ->
+              is_binary(p) and Regex.match?(clear_re, norm_path(p))
+            end)
+          else
+            clear_norm = norm_path(clear_path)
+
+            Enum.any?(rule_paths, fn p ->
+              is_binary(p) and
+                (norm_path(p) == clear_norm or
+                   String.starts_with?(norm_path(p), clear_norm <> "/"))
+            end)
+          end
+
+        true ->
+          true
+      end
+
+    method_ok? and path_ok?
+  end
+
+  defp optional_clear_method(nil), do: nil
+  defp optional_clear_method(m) when is_binary(m), do: String.upcase(m)
+  defp optional_clear_method(m) when is_atom(m), do: m |> Atom.to_string() |> String.upcase()
+
+  defp matcher_method(%{method: m}) when is_binary(m) or is_atom(m), do: optional_clear_method(m)
+  defp matcher_method({:method, m}) when is_binary(m) or is_atom(m), do: optional_clear_method(m)
+  defp matcher_method({:route, m, _}), do: optional_clear_method(m)
+  defp matcher_method(_), do: nil
+
+  defp matcher_paths(%{path: p}) when is_binary(p), do: [p]
+  defp matcher_paths(%{path_regex: %Regex{} = re}), do: [Regex.source(re)]
+  defp matcher_paths({:route, _, p}) when is_binary(p), do: [p]
+  defp matcher_paths({:path, p}) when is_binary(p), do: [p]
+  defp matcher_paths({:path_regex, %Regex{} = re}), do: [Regex.source(re)]
+  defp matcher_paths(_), do: []
 
   defp handle_expectation_control(method, body, state) do
     if norm_method(method) == "PUT" do
